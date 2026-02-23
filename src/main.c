@@ -31,6 +31,8 @@ static const char *TAG = "BLE_SENSOR";
 #define GYRO_X_UUID   0x2004
 #define GYRO_Y_UUID   0x2005
 #define GYRO_Z_UUID   0x2006
+// LED pin
+#define LED_TRANSMIT_PIN  20
 
 // SPI pin definitions
 #define SPI_HOST    SPI2_HOST
@@ -59,6 +61,8 @@ static uint16_t accel_z_handle;
 static uint16_t gyro_x_handle;
 static uint16_t gyro_y_handle;
 static uint16_t gyro_z_handle;
+// Connection state
+static bool client_connected = false;
 // TODO: Write the access callback function (handles reads/writes)
 static int sensor_access_callback(uint16_t conn_handle, uint16_t attr_handle,
                                    struct ble_gatt_access_ctxt *ctxt, void *arg)
@@ -180,13 +184,15 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_CONNECT:
         ESP_LOGI(TAG, "Connection %s",
                  event->connect.status == 0 ? "established" : "failed");
-        if (event->connect.status != 0) {
+        if (event->connect.status == 0) {
+            client_connected = true;} else{ 
             ble_app_advertise();
         }
         break;
         
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "Disconnected");
+          client_connected = false;  
         ble_app_advertise();
         break;
     }
@@ -306,13 +312,25 @@ static void sensor_task(void *param)
         accel_y = (int16_t)((rx_accel_buf[4] << 8) | rx_accel_buf[3]);
         accel_z = (int16_t)((rx_accel_buf[6] << 8) | rx_accel_buf[5]);
         
-        // Notify connected clients that values changed
-        ble_gatts_chr_updated(accel_x_handle);
-        ble_gatts_chr_updated(accel_y_handle);
-        ble_gatts_chr_updated(accel_z_handle);
-        ble_gatts_chr_updated(gyro_x_handle);
-        ble_gatts_chr_updated(gyro_y_handle);
-        ble_gatts_chr_updated(gyro_z_handle);
+   
+
+
+   if (client_connected) {
+    ble_gatts_chr_updated(accel_x_handle);
+    ble_gatts_chr_updated(accel_y_handle);
+    ble_gatts_chr_updated(accel_z_handle);
+    ble_gatts_chr_updated(gyro_x_handle);
+    ble_gatts_chr_updated(gyro_y_handle);
+    ble_gatts_chr_updated(gyro_z_handle);
+  
+       gpio_set_level(LED_TRANSMIT_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(LED_TRANSMIT_PIN, 0);
+}
+
+// Blink LED only if notifications were sent
+
+
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
@@ -320,6 +338,11 @@ static void sensor_task(void *param)
 void app_main(void)
 {
     nvs_flash_init();
+
+    gpio_reset_pin(LED_TRANSMIT_PIN);
+    gpio_set_direction(LED_TRANSMIT_PIN,GPIO_MODE_OUTPUT);
+    gpio_set_level(LED_TRANSMIT_PIN,0);
+    ESP_LOGI(TAG, "LED initialized on GPIO %d", LED_TRANSMIT_PIN);
     
     nimble_port_init();
     
