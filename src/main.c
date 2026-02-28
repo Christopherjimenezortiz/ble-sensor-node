@@ -25,12 +25,7 @@ static const char *TAG = "BLE_SENSOR";
 // TODO: Define your service UUID here
 #define IMU_SERVICE_UUID  0x1234
 // TODO: Define your 6 characteristic UUIDs here
-#define ACCEL_X_UUID  0x2001
-#define ACCEL_Y_UUID  0x2002
-#define ACCEL_Z_UUID  0x2003
-#define GYRO_X_UUID   0x2004
-#define GYRO_Y_UUID   0x2005
-#define GYRO_Z_UUID   0x2006
+static const ble_uuid16_t packet_uuid = BLE_UUID16_INIT(0x2A00);
 // LED pin
 #define LED_TRANSMIT_PIN  20
 
@@ -44,53 +39,44 @@ static const char *TAG = "BLE_SENSOR";
 
 // TODO: Define storage for your 6 sensor values here (int16_t arrays)
 
+// 15-byte sensor data packet
+typedef struct __attribute__((packed)) {
+    uint8_t node_id;      // 1 byte: sensor ID (0x01-0x06)
+    uint32_t timestamp;   // 4 bytes: milliseconds since boot
+    int16_t accel_x;      // 2 bytes
+    int16_t accel_y;      // 2 bytes
+    int16_t accel_z;      // 2 bytes
+    int16_t gyro_x;       // 2 bytes
+    int16_t gyro_y;       // 2 bytes
+    int16_t gyro_z;       // 2 bytes
+} sensor_packet_t;
+// Total: 15 bytes
 // Storage for sensor values
-static int16_t accel_x = 0;
-static int16_t accel_y = 0;
-static int16_t accel_z = 0;
-static int16_t gyro_x = 0;
-static int16_t gyro_y = 0;
-static int16_t gyro_z = 0;
+// Global packet (replaces 6 individual variables)
+static sensor_packet_t current_packet = {
+    .node_id = 0x01  // This is sensor node 1
+};
 
 // SPI device handle (global so sensor task can use it)
 static spi_device_handle_t spi;
 // Storage for characteristic handles
-static uint16_t accel_x_handle;
-static uint16_t accel_y_handle;
-static uint16_t accel_z_handle;
-static uint16_t gyro_x_handle;
-static uint16_t gyro_y_handle;
-static uint16_t gyro_z_handle;
+static uint16_t packet_handle;
 // Connection state
 static bool client_connected = false;
 // TODO: Write the access callback function (handles reads/writes)
 static int sensor_access_callback(uint16_t conn_handle, uint16_t attr_handle,
                                    struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
-    int rc;
+int rc;
     
     switch (ctxt->op) {
     case BLE_GATT_ACCESS_OP_READ_CHR:
-        ESP_LOGI(TAG, "Characteristic read, attr_handle=%d", attr_handle);
-        
-        // Check which characteristic is being read and return the appropriate value
-        if (attr_handle == accel_x_handle) {
-            rc = os_mbuf_append(ctxt->om, &accel_x, sizeof(accel_x));
-        } else if (attr_handle == accel_y_handle) {
-            rc = os_mbuf_append(ctxt->om, &accel_y, sizeof(accel_y));
-        } else if (attr_handle == accel_z_handle) {
-            rc = os_mbuf_append(ctxt->om, &accel_z, sizeof(accel_z));
-        } else if (attr_handle == gyro_x_handle) {
-            rc = os_mbuf_append(ctxt->om, &gyro_x, sizeof(gyro_x));
-        } else if (attr_handle == gyro_y_handle) {
-            rc = os_mbuf_append(ctxt->om, &gyro_y, sizeof(gyro_y));
-        } else if (attr_handle == gyro_z_handle) {
-            rc = os_mbuf_append(ctxt->om, &gyro_z, sizeof(gyro_z));
-        } else {
-            return BLE_ATT_ERR_UNLIKELY;
+        if (attr_handle == packet_handle) {
+            // Send entire 15-byte packet
+            rc = os_mbuf_append(ctxt->om, &current_packet, sizeof(current_packet));
+            return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
-        
-        return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+        return BLE_ATT_ERR_UNLIKELY;
         
     default:
         return BLE_ATT_ERR_UNLIKELY;
@@ -99,12 +85,7 @@ static int sensor_access_callback(uint16_t conn_handle, uint16_t attr_handle,
 // TODO: Write the service definition array
 // First, we need to convert our 16-bit UUIDs to the format NimBLE expects
 static const ble_uuid16_t imu_service_uuid = BLE_UUID16_INIT(IMU_SERVICE_UUID);
-static const ble_uuid16_t accel_x_uuid = BLE_UUID16_INIT(ACCEL_X_UUID);
-static const ble_uuid16_t accel_y_uuid = BLE_UUID16_INIT(ACCEL_Y_UUID);
-static const ble_uuid16_t accel_z_uuid = BLE_UUID16_INIT(ACCEL_Z_UUID);
-static const ble_uuid16_t gyro_x_uuid = BLE_UUID16_INIT(GYRO_X_UUID);
-static const ble_uuid16_t gyro_y_uuid = BLE_UUID16_INIT(GYRO_Y_UUID);
-static const ble_uuid16_t gyro_z_uuid = BLE_UUID16_INIT(GYRO_Z_UUID);
+
 
 // Now define the service structure
 static const struct ble_gatt_svc_def gatt_services[] = {
@@ -113,41 +94,12 @@ static const struct ble_gatt_svc_def gatt_services[] = {
         .uuid = &imu_service_uuid.u,
         .characteristics = (struct ble_gatt_chr_def[]) {
             {
-                .uuid = &accel_x_uuid.u,
+                .uuid = &packet_uuid.u,
                 .access_cb = sensor_access_callback,
                 .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
-                .val_handle = &accel_x_handle,
+                .val_handle = &packet_handle,
             },            
-            {
-                .uuid = &accel_y_uuid.u,
-                .access_cb = sensor_access_callback,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
-                .val_handle = &accel_y_handle,
-            },  
-            {
-                .uuid = &accel_z_uuid.u,
-                .access_cb = sensor_access_callback,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
-                .val_handle = &accel_z_handle,
-            },  
-            {
-                .uuid = &gyro_x_uuid.u,
-                .access_cb = sensor_access_callback,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
-                .val_handle = &gyro_x_handle,
-            }, 
-            {
-                .uuid = &gyro_y_uuid.u,
-                .access_cb = sensor_access_callback,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
-                .val_handle = &gyro_y_handle,
-            }, 
-            {
-                .uuid = &gyro_z_uuid.u,
-                .access_cb = sensor_access_callback,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
-                .val_handle = &gyro_z_handle,
-            },
+        
 
             
             { 0 }  // End of characteristics
@@ -304,26 +256,24 @@ static void sensor_task(void *param)
         spi_device_transmit(spi, &t_accel);
         
         // Update global BLE variables
-        gyro_x = (int16_t)((rx_gyro_buf[2] << 8) | rx_gyro_buf[1]);
-        gyro_y = (int16_t)((rx_gyro_buf[4] << 8) | rx_gyro_buf[3]);
-        gyro_z = (int16_t)((rx_gyro_buf[6] << 8) | rx_gyro_buf[5]);
-        
-        accel_x = (int16_t)((rx_accel_buf[2] << 8) | rx_accel_buf[1]);
-        accel_y = (int16_t)((rx_accel_buf[4] << 8) | rx_accel_buf[3]);
-        accel_z = (int16_t)((rx_accel_buf[6] << 8) | rx_accel_buf[5]);
+// Fill packet with sensor readings
+current_packet.timestamp = (uint32_t)(esp_timer_get_time() / 1000);  // Convert to milliseconds
+current_packet.gyro_x = (int16_t)((rx_gyro_buf[2] << 8) | rx_gyro_buf[1]);
+current_packet.gyro_y = (int16_t)((rx_gyro_buf[4] << 8) | rx_gyro_buf[3]);
+current_packet.gyro_z = (int16_t)((rx_gyro_buf[6] << 8) | rx_gyro_buf[5]);
+
+current_packet.accel_x = (int16_t)((rx_accel_buf[2] << 8) | rx_accel_buf[1]);
+current_packet.accel_y = (int16_t)((rx_accel_buf[4] << 8) | rx_accel_buf[3]);
+current_packet.accel_z = (int16_t)((rx_accel_buf[6] << 8) | rx_accel_buf[5]);
         
    
 
 
    if (client_connected) {
-    ble_gatts_chr_updated(accel_x_handle);
-    ble_gatts_chr_updated(accel_y_handle);
-    ble_gatts_chr_updated(accel_z_handle);
-    ble_gatts_chr_updated(gyro_x_handle);
-    ble_gatts_chr_updated(gyro_y_handle);
-    ble_gatts_chr_updated(gyro_z_handle);
-  
-       gpio_set_level(LED_TRANSMIT_PIN, 1);
+    ble_gatts_chr_updated(packet_handle);
+    
+    // Blink LED
+    gpio_set_level(LED_TRANSMIT_PIN, 1);
     vTaskDelay(pdMS_TO_TICKS(10));
     gpio_set_level(LED_TRANSMIT_PIN, 0);
 }
